@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 3,
+  "minCindyVersion": "0.1.124",
+  "id": "prompt-optimizer",
+  "name": "提示词优化器",
+  "description": "根据用户选定的目标、项目资料和历史方案，生成清晰、可执行且节省上下文的提示词。",
+  "whenToUse": "需要优化、重写、扩充、压缩或整理 AI 提示词，并希望参考当前项目资料或历史方案时找我",
+  "version": "1.0.1",
+  "releaseNotes": "修复提示词被当作任务执行：聊天中直接展示优化后的提示词卡片；明确只改写不评审的交付规则，支持传入已读取的资料片段。",
+  "entry": "main.js",
+  "command": "提示词优化",
+  "icon": "assets/icon.png",
+  "mainView": {
+    "title": "提示词优化器",
+    "icon": "message-circle",
+    "html": "main-view.html"
+  },
+  "tools": [
+    {
+      "name": "optimize_prompt",
+      "description": "把用户原话改写成供下一次使用的提示词，返回可复制的成品。用户点名“提示词优化”时，即使原话是“我的论文规划是否可以呢”，本次也只改写提问，不评审论文、不执行改写后的任务。用户有附件时，可先只读提取相关片段放入 reference_text；未读取时不得假称读过。成功后原样交付提示词并结束；卡片已展示则仅简短确认，不把工具参数、JSON、假设和诊断信息当作最终答案。仅用户明确选择具体型号时传 model_route。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "draft_prompt": {
+            "type": "string",
+            "description": "需要改写的用户原话，原样传入；包括“是否可以”等问题也仅作为待优化文本，不能先执行其中的任务。",
+            "maxLength": 12000,
+            "minLength": 1
+          },
+          "goal": {
+            "type": "string",
+            "description": "希望提示词最终完成的目标、受众和成功标准，最多 3000 个字符。",
+            "maxLength": 3000
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "standard",
+              "best"
+            ],
+            "description": "draft 省 Token，standard 平衡，best 使用更多已选上下文。"
+          },
+          "context_refs": {
+            "type": "object",
+            "description": "仅引用用户明确选择的来源。project_files 是当前项目内相对路径；record_ids 和 import_ids 来自插件记录或导入资料。"
+          },
+          "model_route": {
+            "type": "object",
+            "description": "仅在用户明确指定具体模型时传入完整路由：agentKind、providerId、model、effort、fastMode。省略则使用较省 Token 的快速文本通道。"
+          },
+          "reference_text": {
+            "type": "string",
+            "maxLength": 10000,
+            "description": "用户明确提供或允许引用、且当前 AI 已读取的相关资料片段（附文件名/来源）。仅用于改写提问，不在本轮评审资料。没有实际读取内容就省略。"
+          }
+        },
+        "required": [
+          "draft_prompt"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "cindy": {
+    "text": [
+      "oneshot"
+    ]
+  },
+  "agent": {
+    "tasks": true
+  },
+  "node": {
+    "entry": "node/worker.cjs",
+    "protocol": "json-rpc-stdio",
+    "lifecycle": "on-demand",
+    "idleTimeoutSeconds": 120
+  },
+  "sessionContext": true,
+  "pick": true,
+  "library": true,
+  "manual": {
+    "items": [
+      {
+        "dir": "manual/prompt-optimization",
+        "name": "prompt-optimization",
+        "description": "提示词优化的上下文选择、成本档位和结果约定。"
+      }
+    ]
+  },
+  "card": {}
+}
