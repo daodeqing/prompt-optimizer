@@ -1,29 +1,14 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>提示词优化器</title>
-  <link rel="stylesheet" href="main-view.css">
-</head>
-<body>
-  <main class="shell">
-    <header class="topbar"><div><p class="eyebrow">PROMPT OPTIMIZER</p><h1>把模糊意图变成可执行提示词</h1><p class="lede">选择真正相关的资料，压缩上下文，再交给合适的模型。</p></div><div class="status-pill" id="status" data-state="idle">准备就绪</div></header>
-    <section class="workspace">
-      <section class="editor-panel panel"><div class="panel-heading"><div><span class="panel-kicker">01</span><h2>输入任务</h2></div><button class="quiet" id="clearBtn" type="button">清空</button></div>
-        <label class="field-label" for="draftPrompt">原始提示词 <span>必填</span></label><textarea id="draftPrompt" rows="10" placeholder="例如：帮我看看这个项目怎么优化，给出具体方案……"></textarea>
-        <label class="field-label" for="goal">目标与成功标准 <span>可选</span></label><textarea id="goal" rows="4" placeholder="说明受众、交付物、限制条件或你担心的地方。"></textarea>
-        <div class="control-row"><label class="field-label" for="mode">成本档位<select id="mode"><option value="draft">省 Token</option><option value="standard" selected>平衡</option><option value="best">深度</option></select></label><label class="field-label" for="model">指定模型 <span>可选</span><select id="model"><option value="">快速通道（省 Token）</option></select></label></div>
-        <p class="hint" id="modelHint">未指定具体型号时使用 Cindy 快速文本通道；指定型号会创建一条可查看的优化任务。</p><button class="primary-action" id="optimizeBtn" type="button">优化提示词 <span>⌘↵</span></button>
-      </section>
-      <aside class="context-panel panel"><div class="panel-heading"><div><span class="panel-kicker">02</span><h2>参考资料</h2></div><span class="count" id="contextCount">0 项</span></div>
-        <div class="context-block"><div class="context-title"><span>项目目录</span><button class="quiet" id="pickProjectBtn" type="button">选择目录</button></div><p class="selected-path" id="projectStatus">未选择目录</p><input id="projectFiles" class="text-input" placeholder="相对路径，用逗号分隔，如 README.md, docs/plan.md"><p class="hint">只读扫描你列出的文本文件；不会执行命令或写回项目。</p></div>
-        <div class="context-block"><div class="context-title"><span>插件历史记录</span><button class="quiet" id="refreshRecordsBtn" type="button">刷新</button></div><select id="records" class="multi" multiple size="5"></select><p class="hint">按住 Ctrl / ⌘ 可多选。历史记录只来自本插件。</p></div>
-        <div class="context-block"><div class="context-title"><span>导入资料</span><label class="file-button">导入文件<input id="importFile" type="file" accept=".md,.markdown,.txt,.json,.yaml,.yml,.toml" multiple></label></div><select id="imports" class="multi" multiple size="4"></select><p class="hint">导入内容会保存在插件资料库，可随时删除插件数据。</p></div>
-      </aside>
-    </section>
-    <section class="result-panel panel" id="resultPanel"><div class="panel-heading"><div><span class="panel-kicker">03</span><h2>优化结果</h2></div><button class="quiet" id="copyBtn" type="button" disabled>复制提示词</button></div><div class="empty-state" id="emptyState"><strong>结果会出现在这里</strong><span>先输入提示词，再选择真正需要的参考资料。</span></div><div class="result-content" id="resultContent" hidden><div class="result-meta" id="resultMeta"></div><pre class="prompt-output" id="optimizedPrompt"></pre><div class="result-grid"><section><h3>优化思路</h3><ul id="changes"></ul></section><section><h3>假设与风险</h3><ul id="risks"></ul></section></div></div></section>
-  </main>
-  <script src="main-view.js" defer></script>
-</body>
-</html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>提示词优化器</title><link rel="stylesheet" href="main-view.css"></head><body><main class="shell">
+<header class="topbar"><div><h1>提示词优化器</h1><p class="lede">选一个项目，把想法变成清晰的提示词。</p></div><span class="version">1.2.0</span></header>
+<p id="status" role="status" aria-live="polite">正在读取设置…</p>
+<section class="panel editor-panel">
+<div class="panel-heading"><div><h2>当前项目</h2><p id="projectStatus" class="project-status">尚未选择项目</p></div><button id="pickProjectBtn" type="button">选择项目</button></div>
+<p class="hint">自动查找项目资料、文字型 PDF 和相关会话，只读处理；读取状态在结果旁显示。</p>
+<label for="draftPrompt">你的原始提示词</label><textarea id="draftPrompt" rows="6" maxlength="12000" placeholder="直接写下你希望 AI 做的事。"></textarea>
+<div class="control-row"><div><label for="category">任务类型</label><select id="category"><option value="auto">自动识别</option><option>工程</option><option>编程</option><option>论文/研究</option><option>写作</option><option>分析</option></select></div><div><label for="length">详细程度</label><select id="length"><option value="auto">按需要判断</option><option>精简</option><option>标准</option><option>详细</option></select></div></div>
+<details id="modelSettings" class="model-settings"><summary><span>优化模型</span><span id="savedModelLabel">尚未选择</span></summary><label for="model">型号与来源</label><select id="model"><option value="">请选择模型</option></select><div class="control-row"><div><label for="effort">推理强度</label><select id="effort"><option value="">未指定</option></select></div><div><label for="fastMode">Fast</label><select id="fastMode"><option value="false">关闭</option></select></div></div><p class="hint">保存一次，之后始终使用这个型号。不可用时停止，不自动换模。</p><div class="button-row"><button id="saveModelBtn" type="button">保存模型</button><button id="pickModelBtn" class="quiet" type="button">用 Cindy 选择</button><button id="refreshModelsBtn" class="quiet" type="button">刷新目录</button></div></details>
+<div class="button-row action-row"><button id="optimizeBtn" class="primary-action" type="button" disabled>优化提示词</button><button id="cancelBtn" type="button" hidden>取消本次</button><button id="resumeBtn" type="button" hidden>继续查看</button></div><p class="hint">该简则简，该详则详。只改写提示词，不执行其中的任务。</p>
+</section>
+<section class="panel result-panel" aria-label="优化结果"><div class="panel-heading"><h2>优化后的提示词</h2><button id="copyBtn" type="button" disabled>复制</button></div><div id="resultMeta" class="result-meta"></div><p id="emptyState" class="empty-state">优化结果会显示在这里。</p><pre id="optimizedPrompt" class="prompt-output" tabindex="0" hidden></pre></section>
+</main><script src="main-view.js" defer></script></body></html>

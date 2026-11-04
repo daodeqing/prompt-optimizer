@@ -1,12 +1,12 @@
 {
   "schemaVersion": 3,
-  "minCindyVersion": "0.1.124",
+  "minCindyVersion": "0.1.125",
   "id": "prompt-optimizer",
   "name": "提示词优化器",
   "description": "根据用户选定的目标、项目资料和历史方案，生成清晰、可执行且节省上下文的提示词。",
   "whenToUse": "需要优化、重写、扩充、压缩或整理 AI 提示词，并希望参考当前项目资料或历史方案时找我",
-  "version": "1.0.1",
-  "releaseNotes": "修复提示词被当作任务执行：聊天中直接展示优化后的提示词卡片；明确只改写不评审的交付规则，支持传入已读取的资料片段。",
+  "version": "1.2.0",
+  "releaseNotes": "新增工程、编程、论文/研究、写作、分析分类，可自动识别或手选；按任务需要决定提示词篇幅，支持精简、标准、详细。简化为选择项目、输入原话、优化与复制，自动只读筛选项目资料。新增随包本地 PDF 文字提取，支持中文、多页、页码来源、大小与页数预算，扫描件、加密或损坏文件明确提示。通过所选模型调用 Cindy 官方历史工具查询本项目会话，并核对实际工具回执，区分读取、无结果与不可用。模型选择持久保存，聊天和工作台严格共用所选来源与型号，不再自动回落快速通道。修复结果被当作任务执行、结构化结果读取、重复提交、中断恢复、取消和存储错误处理；成品正文与分类、模型、资料状态分离，复制只包含提示词。最低 Cindy 版本调整为 0.1.125。",
   "entry": "main.js",
   "command": "提示词优化",
   "icon": "assets/icon.png",
@@ -18,13 +18,13 @@
   "tools": [
     {
       "name": "optimize_prompt",
-      "description": "把用户原话改写成供下一次使用的提示词，返回可复制的成品。用户点名“提示词优化”时，即使原话是“我的论文规划是否可以呢”，本次也只改写提问，不评审论文、不执行改写后的任务。用户有附件时，可先只读提取相关片段放入 reference_text；未读取时不得假称读过。成功后原样交付提示词并结束；卡片已展示则仅简短确认，不把工具参数、JSON、假设和诊断信息当作最终答案。仅用户明确选择具体型号时传 model_route。",
+      "description": "在提示词优化器已选项目内改写用户提示词。自动只读筛选相关项目文本与文字型 PDF（随包本地提取、保留页码；扫描件提示需 OCR），所选模型尝试通过 Cindy 官方历史工具按项目目录查询相关会话，不可用时明确返回未读取状态，再交付可复制的提示词；不执行原任务、不修改项目文件。不读取其他项目或宿主数据库。工作台已保存模型必用，不可用就停止。分类和篇幅可自动或手选；清晰的原文只做必要修改。状态未知时查询原请求，不重复提交。",
       "parameters": {
         "type": "object",
         "properties": {
           "draft_prompt": {
             "type": "string",
-            "description": "需要改写的用户原话，原样传入；包括“是否可以”等问题也仅作为待优化文本，不能先执行其中的任务。",
+            "description": "需要改写的用户原话；本次只改写，不执行其中的任务。",
             "maxLength": 12000,
             "minLength": 1
           },
@@ -40,7 +40,7 @@
               "standard",
               "best"
             ],
-            "description": "draft 省 Token，standard 平衡，best 使用更多已选上下文。"
+            "description": "兼容旧参数，仅影响资料预算；不影响模型选择。"
           },
           "context_refs": {
             "type": "object",
@@ -48,12 +48,40 @@
           },
           "model_route": {
             "type": "object",
-            "description": "仅在用户明确指定具体模型时传入完整路由：agentKind、providerId、model、effort、fastMode。省略则使用较省 Token 的快速文本通道。"
+            "description": "仅兼容旧调用。必须与工作台已保存的完整模型路由一致；不能在聊天中覆盖工作台选择。"
           },
           "reference_text": {
             "type": "string",
             "maxLength": 10000,
             "description": "用户明确提供或允许引用、且当前 AI 已读取的相关资料片段（附文件名/来源）。仅用于改写提问，不在本轮评审资料。没有实际读取内容就省略。"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "工程",
+              "编程",
+              "论文/研究",
+              "写作",
+              "分析"
+            ],
+            "description": "任务分类。auto 自动识别；手动分类优先于自动识别。工作台选择优先。"
+          },
+          "length": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "精简",
+              "标准",
+              "详细"
+            ],
+            "description": "详细程度。auto 按任务复杂度决定；精简、标准、详细可手动覆盖。"
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]+$",
+            "maxLength": 100,
+            "description": "仅重试同一次操作时沿用该编号；首次调用可省略。内容改变必须视为新请求，不能用新编号绕过未确定结果。"
           }
         },
         "required": [
@@ -61,13 +89,52 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "query_optimization",
+      "description": "查询之前同一次优化的结果。只传原 request_id，不会再次提交原文或切换模型。完成后只交付成品提示词；未完成时继续查询原请求，不另建任务。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "choose_model",
+      "description": "用户要选择优化模型或尚未设置模型时，打开 Cindy 原生模型选择器；用户亲自确认后保存到工作台统一设置，不由 AI 自行选型，不调用模型。取消则停止，不反复弹窗。",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "optimizer_status",
+      "description": "只读查看提示词优化器版本、已保存模型、分类和详细程度；不调用模型、不更改设置。",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "choose_project",
+      "description": "打开本机目录选择器，由用户选择提示词优化所属项目。保存后自动只读筛选此项目内的文本资料，并让已保存模型在同一次任务内通过 Cindy 官方历史工具查询这个项目的相关会话。不会修改项目文件、读取其他项目或直接读取宿主数据库。",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     }
   ],
-  "cindy": {
-    "text": [
-      "oneshot"
-    ]
-  },
   "agent": {
     "tasks": true
   },
@@ -89,5 +156,6 @@
       }
     ]
   },
-  "card": {}
+  "card": {},
+  "showTaskPreferences": false
 }
