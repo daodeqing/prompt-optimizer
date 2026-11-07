@@ -2,6 +2,7 @@ const channel = new BroadcastChannel('prompt-optimizer');
 const $ = selector => document.querySelector(selector);
 const pending = new Map();
 let saved = { revision: 0, route: null, category: 'auto', length: 'auto' };
+let candyRunning = false;
 let catalog = [], result = null, activeId = null, polling = false, starting = false, destroyed = false, selectedProject = null;
 let readyPromise = null, readyResolve = null;
 const storageKey = 'prompt-optimizer-active-v2';
@@ -18,6 +19,7 @@ function candidateRoute() {
 function modelDirty() { const value = candidateRoute(); return !!value && !same(value, saved.route); }
 function controls() {
   $('#optimizeBtn').disabled = starting || !!activeId || !selectedProject || !saved.route || !candidateRoute() || modelDirty();
+  $('#candyBtn').disabled = candyRunning || starting || !!activeId || !saved.route || !candidateRoute() || modelDirty();
   $('#cancelBtn').hidden = !activeId;
   $('#resumeBtn').hidden = !activeId || polling;
 }
@@ -157,7 +159,32 @@ async function optimize() {
   } catch (error) { setStatus(error.message, 'error'); }
   finally { starting = false; controls(); }
 }
+function renderCandy(value) {
+  const result = value.result;
+  $('#candyEmpty').hidden = true;
+  $('#candyResult').hidden = false;
+  const names = { correct: '通过', wrong: '未通过', failed: '请求失败', ungraded: '无法评分' };
+  const rows = result.results.map(item => '<li>第 ' + item.round + ' 次：' + names[item.status] + '；' + (item.final_answer ?? item.error ?? item.reason ?? '') + '</li>').join('');
+  $('#candyResult').innerHTML = '<p><strong>通过 ' + result.correct + '/' + result.graded + '</strong>，通过率 ' + (result.pass_rate === null ? '暂无通过率' : result.pass_rate + '%') + '；标准答案：21</p><ul>' + rows + '</ul><p class="hint">' + result.note + '</p>';
+}
+async function candyTest() {
+  if (candyRunning || !saved.route || modelDirty()) return;
+  candyRunning = true; controls(); setStatus('正在运行降智测试…', 'busy');
+  try {
+    const id = key('test');
+    const started = await request('test-start', { runs: Number($('#candyRuns').value) }, id);
+    let state = started;
+    while (!['completed', 'cancelled', 'failed', 'interrupted'].includes(state.status)) {
+      state = await request('test-query', { request_id: id });
+      if (!['completed', 'cancelled', 'failed', 'interrupted'].includes(state.status)) await new Promise(resolve => setTimeout(resolve, 1800));
+    }
+    if (state.status === 'completed') { renderCandy({ result: state }); setStatus('降智测试完成。'); }
+    else setStatus(state.error?.message || '降智测试未完成。', 'error');
+  } catch (error) { setStatus(error.message, 'error'); }
+  finally { candyRunning = false; controls(); }
+}
 $('#optimizeBtn').addEventListener('click', optimize);
+$('#candyBtn').addEventListener('click', candyTest);
 document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void optimize(); } });
 $('#saveModelBtn').addEventListener('click', saveModel);
 $('#model').addEventListener('change', () => { renderEfforts(); setStatus('已选择型号，请点击“保存模型”后使用。'); controls(); });

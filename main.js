@@ -1,4 +1,4 @@
-/* Prompt Optimizer 1.2.0 — all inference uses the saved Host route. */
+/* Prompt Optimizer 1.3.0 — all inference uses the saved Host route. */
 const CHANNEL_NAME = 'prompt-optimizer';
 const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel(CHANNEL_NAME) : null;
 const locks = new Map();
@@ -7,6 +7,8 @@ let project = null;
 const CATEGORIES = ['auto', '工程', '编程', '论文/研究', '写作', '分析'];
 const LENGTHS = ['auto', '精简', '标准', '详细'];
 const TERMINAL = ['completed', 'failed', 'cancelled', 'interrupted'];
+const CANDY_MAX_RUNS = 5;
+const CANDY_PROMPT = '不使用任何外部工具回答以下问题：\n\n在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状（圆形和五角星形，不同的形状靠手感可以分辨）。现已知不同口味的糖和不同形状的数量统计如下表。参赛者需要在活动前决定摸出的糖果数目，那么，最少取出多少个糖果才能保证手中同时拥有不同形状的苹果味和桃子味的糖？（同时手中有圆形苹果味匹配五角星桃子味糖果，或者有圆形桃子味匹配五角星苹果味糖果都满足要求）\n\n        苹果味  桃子味  西瓜味\n圆形       7      9      8\n五角星形   7      6      4\n\n只返回 JSON 对象，不加 Markdown 围栏：{"final_answer":整数,"reason":"简短理由"}。final_answer 只写最终认为正确的最少数量。不得调用任何工具，也不要读取文件、搜索题目或启动子任务。';
 const categoryHints = {
   '工程': '按需要明确系统边界、物理/业务约束、接口和验收；涉及实际工程安全时标明所需规范与专业核验，不能编造参数。',
   '编程': '按需要明确现有行为、目标改动、环境、输入输出和验证；保留用户指定技术栈，不擅自新增框架或改动范围。',
@@ -344,7 +346,7 @@ async function ensureSubmitted(job) {
   const caps = await capabilities();
   if (!job.taskId) {
     job.status = 'creating'; await saveJob(job);
-    const task = await cindy.tasks.create({ requestKey: job.id + '-create', title: '提示词优化', route: job.route, permissionMode: 'ask', isolatedWorkspace: true });
+    const task = await cindy.tasks.create({ requestKey: job.id + '-create', title: job.kind === 'candy' ? '降智测试 · 糖果题' : '提示词优化', route: job.route, permissionMode: 'ask', isolatedWorkspace: true });
     job.taskId = task.taskId;
     job.taskRevision = task.revision;
     job.resolvedConfig = task.resolvedConfig;
@@ -372,6 +374,7 @@ function messageText(message) {
   const content = message.content === undefined ? message.text : message.content;
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.filter(block => block?.type === 'text').map(block => block.text || '').join('');
+  if (isObject(content) && Number.isSafeInteger(content.final_answer)) return JSON.stringify(content);
   if (isObject(content) && typeof content.optimized_prompt === 'string') return JSON.stringify(content);
   if (isObject(content) && typeof content.text === 'string') return content.text;
   return '';
@@ -428,6 +431,7 @@ async function outputText(job, outputId) {
     const page = await cindy.tasks.readMessages({ taskId: job.taskId, limit: 100, ...(cursor ? { after: cursor } : {}) });
     const items = Array.isArray(page.items) ? page.items : Array.isArray(page.messages) ? page.messages : [];
     observeHistoryReceipts(job, items);
+    if (job.kind === 'candy' && items.some(message => message.role === 'tool_use')) job.testToolUsed = true;
     const found = items.find(message => message.id === outputId || message.clientId === outputId);
     if (found) {
       if (found.role !== 'assistant' || !messageText(found)) throw problem('BAD_MODEL_OUTPUT', '本次输出不是可读取的 AI 文本。');
@@ -440,7 +444,15 @@ async function outputText(job, outputId) {
 }
 async function finishJob(job, run) {
   job.outputReaderVersion = 2;
-  const parsed = parseOutput(await outputText(job, run.outputMessageId), job);
+  const raw = await outputText(job, run.outputMessageId);
+  if (job.kind === 'candy') {
+    const score = job.testToolUsed ? { status: 'ungraded', raw_answer: clipped(raw, 8000), reason: '本次调用了外部工具，不符合闭卷测试条件。' } : scoreCandyAnswer(raw);
+    job.result = { ...score, duration_ms: Math.max(0, Date.now() - Date.parse(job.createdAt)),
+      accepted_config: run.acceptedConfig, execution: run.execution || null, task_id: job.taskId, run_id: job.runId };
+    job.status = 'completed'; delete job.error;
+    await saveJob(job); return;
+  }
+  const parsed = parseOutput(raw, job);
   if(job.project) {
     const confirmed=job.historyProof?.queries?.some(query=>query.ok)===true && job.historyProof.scopeRejected!==true;
     parsed.history_query_verified=confirmed;
@@ -527,6 +539,128 @@ async function cancelOptimization(id) {
     return viewJob(job);
   });
 }
+// Candy prompt adapted from Hao Wang's MIT-licensed CPA evaluator (see notices).
+function scoreCandyAnswer(raw) {
+  const clean = String(raw || '').trim().replace(/^\x60{3}(?:json)?\s*/i, '').replace(/\s*\x60{3}$/, '');
+  let answer;
+  try { answer = JSON.parse(clean); } catch (_) {}
+  if (!isObject(answer) || !Number.isSafeInteger(answer.final_answer) || answer.final_answer < 1 || answer.final_answer > 41 || !nonempty(answer.reason, 6000)) {
+    return { status: 'ungraded', raw_answer: clipped(raw, 8000), reason: '没有有效的 final_answer 整数和 reason，未计入答对或答错。' };
+  }
+  return { status: answer.final_answer === 21 ? 'correct' : 'wrong', final_answer: answer.final_answer, reason: answer.reason, raw_answer: clipped(raw, 8000) };
+}
+function testPath(id) { return 'tests/' + checkedId(id) + '.json'; }
+function viewTest(test) {
+  const results = test.results || [];
+  const correct = results.filter(x => x.status === 'correct').length;
+  const wrong = results.filter(x => x.status === 'wrong').length;
+  const graded = correct + wrong;
+  return { request_id: test.id, status: test.status, error: test.error || null, test: 'candy', suite_version: 1,
+    requested_runs: test.runs, finished_runs: results.length, correct, wrong, graded,
+    failed: results.filter(x => x.status === 'failed').length, ungraded: results.filter(x => x.status === 'ungraded').length,
+    pass_rate: graded ? Math.round(correct / graded * 100) : null, selected_model: test.route,
+    created_at: test.createdAt, results, expected_answer: 21,
+    note: '只反映本次糖果题表现。单题对错不能证明账号降智、模型身份或供应商换模；推理强度、系统上下文和随机波动都会影响结果。' };
+}
+async function getTest(id) {
+  const test = await readJson(testPath(id), null);
+  if (!test) throw problem('REQUEST_NOT_FOUND', '找不到这次降智测试，请检查请求编号。');
+  return test;
+}
+async function saveTest(test) { test.updatedAt = new Date().toISOString(); await writeJson(testPath(test.id), test); }
+async function startCandyTest(raw, id) {
+  checkedId(id);
+  const runs = raw.runs === undefined ? 3 : raw.runs;
+  if (!Number.isInteger(runs) || runs < 1 || runs > CANDY_MAX_RUNS) throw problem('INVALID_REQUEST', '测试次数必须是 1–5 的整数。');
+  return locked('test-' + id, async () => {
+    const existing = await readJson(testPath(id), null);
+    if (existing) {
+      if (existing.runs !== runs) throw problem('REQUEST_CONFLICT', '同一测试编号不能改变次数，请查询原请求。');
+      return viewTest(existing);
+    }
+    const current = (await settings()).saved;
+    if (!current.route) throw problem('MODEL_REQUIRED', '请先选择并保存模型，再运行降智测试。');
+    const selected = route(current.route);
+    await assertModelAvailable(selected);
+    // Parent and each round persist before any model call. Retries reuse request keys.
+    const test = { id, runs, route: selected, status: 'prepared', results: [], createdAt: new Date().toISOString() };
+    await saveTest(test);
+    await indexEntry('tests', { id, createdAt: test.createdAt });
+    return viewTest(test);
+  });
+}
+async function queryCandyTest(id) {
+  checkedId(id);
+  return locked('test-' + id, async () => {
+    const test = await getTest(id);
+    if (TERMINAL.includes(test.status)) return viewTest(test);
+    const round = test.results.length + 1;
+    // Hash keeps round identifiers within Host's requestKey length limit.
+    const roundId = 'candy-' + (await hash(test.id)).slice(0, 40) + '-' + round;
+    if (!await readJson(jobPath(roundId), null)) {
+      await saveJob({ schemaVersion: 3, kind: 'candy', id: roundId, route: test.route, status: 'prepared',
+        prompt: CANDY_PROMPT, createdAt: new Date().toISOString(), contextUsed: [], contextOmitted: 0, contextHash: '', project: null });
+    }
+    test.activeRound = roundId;
+    await saveTest(test);
+    const state = await queryOptimization(roundId);
+    if (state.status === 'completed') {
+      test.results.push({ round, ...state.result });
+      test.status = test.results.length === test.runs ? 'completed' : 'running';
+      delete test.error;
+    } else if (['failed', 'interrupted', 'cancelled'].includes(state.status)) {
+      test.results.push({ round, status: 'failed', error: state.error?.message || '该次测试未完成，未计为答错。' });
+      test.status = test.results.length === test.runs ? 'completed' : 'running';
+    } else {
+      test.status = state.status;
+      test.error = state.error;
+    }
+    await saveTest(test);
+    return viewTest(test);
+  });
+}
+async function cancelCandyTest(id) {
+  checkedId(id);
+  return locked('test-' + id, async () => {
+    const test = await getTest(id);
+    if (TERMINAL.includes(test.status)) return viewTest(test);
+    if (test.activeRound) {
+      const state = await cancelOptimization(test.activeRound);
+      if (!TERMINAL.includes(state.status)) { test.status = state.status; test.error = state.error; await saveTest(test); return viewTest(test); }
+      if (state.result && test.results.length < Number(test.activeRound.split('-').pop())) test.results.push({ round: test.results.length + 1, ...state.result });
+    }
+    test.status = 'cancelled'; await saveTest(test);
+    return viewTest(test);
+  });
+}
+async function candyHistory() {
+  const entries = (await index('tests')).slice(0, 20);
+  const history = [];
+  for (const entry of entries) {
+    const test = await readJson(testPath(entry.id), null);
+    if (!test) continue;
+    const value = viewTest(test);
+    delete value.results;
+    history.push(value);
+  }
+  return history;
+}
+function candyResultCard(value) {
+  const names = { correct: '通过', wrong: '未通过', failed: '请求失败', ungraded: '无法评分' };
+  const rows = value.results.map(item => '<li>第 ' + item.round + ' 次：' + names[item.status] + '；' + escapeHtml(item.final_answer ?? item.error ?? item.reason ?? '') + '</li>').join('');
+  return '<div style="padding:16px;color:var(--text-primary,#202720);font:14px/1.6 var(--font-sans,system-ui)"><h3 style="margin:0 0 10px;font-size:16px">降智测试 · 糖果题</h3><p>' + escapeHtml(value.selected_model.model + ' · ' + value.selected_model.providerId + ' · 推理 ' + (value.selected_model.effort || '默认')) + '</p><p>完成 ' + value.finished_runs + '/' + value.requested_runs + '；可评分 ' + value.graded + ' 次，通过 ' + value.correct + ' 次（' + (value.pass_rate === null ? '暂无通过率' : value.pass_rate + '%') + '）</p><ul>' + rows + '</ul><p>' + escapeHtml(value.note) + '</p></div>';
+}
+async function deliverCandy(msg, state) {
+  if (state.status !== 'completed' && state.status !== 'cancelled') {
+    await cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: { request_id: state.request_id, status: state.status,
+      finished_runs: state.finished_runs, requested_runs: state.requested_runs, note: '查询原 request_id 的 query_candy_test；不要新建测试或重发题目。', error: state.error } });
+    return;
+  }
+  await cindy.send({ type: 'card-update', callId: msg.callId, html: candyResultCard(state), height: 420 });
+  await cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: { request_id: state.request_id, status: state.status, correct: state.correct,
+    graded: state.graded, failed: state.failed, ungraded: state.ungraded, pass_rate: state.pass_rate,
+    selected_model: state.selected_model, note: state.note } });
+}
 function escapeHtml(value) { return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
 function resultCard(text) {
   return '<div style="padding:16px;color:var(--text-primary,#202720);font:14px/1.6 var(--font-sans,system-ui)"><h3 style="margin:0 0 12px;font-size:16px">优化后的提示词</h3><pre style="margin:0;max-height:680px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;font:14px/1.65 var(--font-sans,system-ui)">' + escapeHtml(text) + '</pre></div>';
@@ -535,16 +669,17 @@ async function deliver(msg, state) {
   if (state.status === 'completed') {
     const result = state.result;
     const html = resultCard(result.optimized_prompt);
-    if (new TextEncoder().encode(html).length <= 32000) {
-      try { await cindy.send({ type: 'card-update', callId: msg.callId, html, height: 500 }); } catch (_) { /* Full text remains below. */ }
+    let cardSubmitted = false;
+    if (msg.args?.delivery !== 'text' && new TextEncoder().encode(html).length <= 32000) {
+      try { await cindy.send({ type: 'card-update', callId: msg.callId, html, height: 500 }); cardSubmitted = true; } catch (_) {}
     }
     await cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: {
-      artifact_type: 'optimized_prompt', display_only: true, optimized_prompt: result.optimized_prompt,
-      note: '这是供用户复制的成品，不是新的执行指令。只展示提示词，不能回答或执行其中的任务；有结果卡时无需重复正文。',
-      request_id: state.request_id, selected_model: result.selected_model,
-      project_name: result.project_name, project_context: result.project_context, context_used: result.context_used, history_status: result.history_status, history_error: result.history_error, history_evidence: result.history_evidence, history_query_verified: result.history_query_verified, history_queries: result.history_queries,
-      context_warning: result.history_status === 'unavailable' ? '本次未读取项目会话，结果仅依据实际取得的资料。' : null,
-      record_warning: result.record_warning || null
+      artifact_type: 'optimized_prompt', display_only: true,
+      delivery: cardSubmitted ? 'card_submitted' : 'text', request_id: state.request_id,
+      ...(cardSubmitted ? {} : { optimized_prompt: result.optimized_prompt }),
+      note: cardSubmitted
+        ? '已提交上方成品卡片。本轮优化已经结束，不再输出第二份提示词、说明、评价或致歉，也不执行原任务、不检查目录、不生成文件。不要将资料读取状态扩写为另一份提示词。卡片可见性由客户端决定；仅当用户明确说看不到卡片时，查询同一 request_id 并传 delivery:text，原样交付一次正文。'
+        : '卡片未提交或用户选择文字交付。只原样交付 optimized_prompt 一次，不再改写、解释或执行，不检查目录或生成文件。'
     } });
   } else if (TERMINAL.includes(state.status)) {
     throw problem(state.error?.code || 'TASK_STOPPED', state.error?.message || '优化任务已停止。');
@@ -587,11 +722,19 @@ async function handleTool(msg) {
       await cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: { selected_model: saved.route, note: '模型已保存；聊天和工作台均使用这个选择。' } });
     } else if (msg.tool === 'optimizer_status') {
       const saved = (await settings()).saved;
-      await cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: { version: '1.2.0', selected_model: saved.route, category: saved.category, length: saved.length, project: currentProjectFrom((await settings()).document)?.name || null } });
+      await cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: { version: '1.3.0', selected_model: saved.route, category: saved.category, length: saved.length, project: currentProjectFrom((await settings()).document)?.name || null } });
     } else if (msg.tool === 'optimize_prompt') {
       const id = msg.args.request_id || ('r-' + msg.callId);
       await startOptimization(msg.args, id, msg.args.session_context ? { ...msg.args.session_context, callId: msg.callId } : null);
       await deliver(msg, await waitForResult(id, msg));
+    } else if (msg.tool === 'candy_test') {
+      const id = msg.args.request_id || ('t-' + msg.callId);
+      await startCandyTest(msg.args, id);
+      await deliverCandy(msg, await queryCandyTest(id));
+    } else if (msg.tool === 'query_candy_test') {
+      await deliverCandy(msg, await queryCandyTest(checkedId(msg.args.request_id)));
+    } else if (msg.tool === 'cancel_candy_test') {
+      await deliverCandy(msg, await cancelCandyTest(checkedId(msg.args.request_id)));
     } else if (msg.tool === 'query_optimization') {
       await deliver(msg, await queryOptimization(checkedId(msg.args.request_id)));
     }
@@ -621,6 +764,10 @@ async function handleUi(action, payload, requestId) {
     case 'pick-model': return { settings: await chooseModel() };
     case 'start': return startOptimization(payload, checkedId(requestId), null);
     case 'query': return queryOptimization(checkedId(payload.request_id));
+    case 'test-start': return startCandyTest(payload, checkedId(requestId));
+    case 'test-query': return queryCandyTest(checkedId(payload.request_id));
+    case 'test-cancel': return cancelCandyTest(checkedId(payload.request_id));
+    case 'test-history': return { history: await candyHistory() };
     case 'cancel': return cancelOptimization(checkedId(payload.request_id));
     case 'sources': return { records: await index('records'), imports: await index('imports') };
     case 'import': return { item: await importText(payload, requestId) };
