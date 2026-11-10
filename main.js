@@ -1,4 +1,4 @@
-/* Prompt Optimizer 1.3.0 — all inference uses the saved Host route. */
+/* Prompt Optimizer 1.4.0 — all inference uses the saved Host route. */
 const CHANNEL_NAME = 'prompt-optimizer';
 const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel(CHANNEL_NAME) : null;
 const locks = new Map();
@@ -77,7 +77,7 @@ async function saveSettings(input) {
     const selected = route(input.route);
     if (!CATEGORIES.includes(input.category) || !LENGTHS.includes(input.length)) throw problem('INVALID_REQUEST', '分类或详细程度无效。');
     await assertModelAvailable(selected);
-    const next = { schemaVersion: 2, revision: current.saved.revision + 1, route: selected, category: input.category, length: input.length, updatedAt: new Date().toISOString() };
+    const next = { ...current.saved, schemaVersion: 2, revision: current.saved.revision + 1, route: selected, category: input.category, length: input.length, updatedAt: new Date().toISOString() };
     const response = await fetch('/kv', { method: 'PUT', body: JSON.stringify({ ...current.document, promptOptimizer: next }) });
     if (!response.ok) throw problem('SETTINGS_SAVE_FAILED', '设置未保存成功，请保留当前选择并重试。');
     channel?.postMessage({ type: 'settings-changed' });
@@ -110,7 +110,7 @@ async function assertModelAvailable(selected) {
   const all = await models();
   const item = all.find(item => item.route.agentKind === selected.agentKind && item.route.providerId === selected.providerId && item.route.model === selected.model);
   if (!item) throw problem('MODEL_UNAVAILABLE', '已保存的模型当前不可用，请在工作台重新选择；本次不会更换型号。');
-  if (selected.effort && item.efforts.length && !item.efforts.includes(selected.effort)) throw problem('MODEL_UNAVAILABLE', '所选推理强度已不可用，请重新选择。');
+  if (selected.effort && !item.efforts.includes(selected.effort)) throw problem('MODEL_UNAVAILABLE', '所选推理强度已不可用，请重新选择。');
   if (selected.fastMode && !item.supportsFastMode) throw problem('MODEL_UNAVAILABLE', '该模型当前不支持所选 Fast 配置，请重新选择。');
   return item;
 }
@@ -346,7 +346,7 @@ async function ensureSubmitted(job) {
   const caps = await capabilities();
   if (!job.taskId) {
     job.status = 'creating'; await saveJob(job);
-    const task = await cindy.tasks.create({ requestKey: job.id + '-create', title: job.kind === 'candy' ? '降智测试 · 糖果题' : '提示词优化', route: job.route, permissionMode: 'ask', isolatedWorkspace: true });
+    const task = await cindy.tasks.create({ requestKey: job.id + '-create', title: job.kind ? '模型测试 · ' + ({ candy: '糖果题', pelican: '画鹈鹕', fingerprint: '指纹检测' }[job.kind] || job.kind) : '提示词优化', route: job.route, permissionMode: 'ask', isolatedWorkspace: true });
     job.taskId = task.taskId;
     job.taskRevision = task.revision;
     job.resolvedConfig = task.resolvedConfig;
@@ -431,7 +431,7 @@ async function outputText(job, outputId) {
     const page = await cindy.tasks.readMessages({ taskId: job.taskId, limit: 100, ...(cursor ? { after: cursor } : {}) });
     const items = Array.isArray(page.items) ? page.items : Array.isArray(page.messages) ? page.messages : [];
     observeHistoryReceipts(job, items);
-    if (job.kind === 'candy' && items.some(message => message.role === 'tool_use')) job.testToolUsed = true;
+    if (job.kind && items.some(message => message.role === 'tool_use')) job.testToolUsed = true;
     const found = items.find(message => message.id === outputId || message.clientId === outputId);
     if (found) {
       if (found.role !== 'assistant' || !messageText(found)) throw problem('BAD_MODEL_OUTPUT', '本次输出不是可读取的 AI 文本。');
@@ -445,8 +445,8 @@ async function outputText(job, outputId) {
 async function finishJob(job, run) {
   job.outputReaderVersion = 2;
   const raw = await outputText(job, run.outputMessageId);
-  if (job.kind === 'candy') {
-    const score = job.testToolUsed ? { status: 'ungraded', raw_answer: clipped(raw, 8000), reason: '本次调用了外部工具，不符合闭卷测试条件。' } : scoreCandyAnswer(raw);
+  if (job.kind) {
+    const score = job.testToolUsed ? { status: 'ungraded', raw_answer: clipped(raw, 8000), reason: '本次调用了外部工具，不符合闭卷测试条件。' } : job.kind === 'candy' ? scoreCandyAnswer(raw) : await evaluationWorker('score_test', { kind: job.kind, variant: job.variant, text: raw, expected_count: job.expectedCount });
     job.result = { ...score, duration_ms: Math.max(0, Date.now() - Date.parse(job.createdAt)),
       accepted_config: run.acceptedConfig, execution: run.execution || null, task_id: job.taskId, run_id: job.runId };
     job.status = 'completed'; delete job.error;
@@ -512,7 +512,7 @@ async function queryOptimization(id) {
         await saveJob(job);
       } else await saveJob(job);
     } catch (error) {
-      const safeFailure = ['MODEL_ROUTE_REJECTED', 'BAD_MODEL_OUTPUT', 'MODEL_UNAVAILABLE'].includes(error.code) || knownTaskFailure(error);
+      const safeFailure = ['MODEL_ROUTE_REJECTED', 'BAD_MODEL_OUTPUT', 'MODEL_UNAVAILABLE', 'EVALUATION_FAILED'].includes(error.code) || knownTaskFailure(error);
       job.error = { code: error.code || 'TASK_STATUS_UNKNOWN', message: error.message || '无法确认任务状态，请稍后继续查看原请求。' };
       job.status = safeFailure ? 'failed' : (error.code === 'OUTPUT_NOT_READY' ? 'output_pending' : 'uncertain');
       await saveJob(job);
@@ -550,17 +550,23 @@ function scoreCandyAnswer(raw) {
   return { status: answer.final_answer === 21 ? 'correct' : 'wrong', final_answer: answer.final_answer, reason: answer.reason, raw_answer: clipped(raw, 8000) };
 }
 function testPath(id) { return 'tests/' + checkedId(id) + '.json'; }
+async function evaluationWorker(method, params) {
+  const response = await cindy.node.request({ method, params, timeoutMs: 30000 });
+  if (!response?.ok) throw problem('EVALUATION_FAILED', response?.message || '测试参考资料或评分不可用。');
+  return response.result;
+}
 function viewTest(test) {
   const results = test.results || [];
   const correct = results.filter(x => x.status === 'correct').length;
   const wrong = results.filter(x => x.status === 'wrong').length;
   const graded = correct + wrong;
-  return { request_id: test.id, status: test.status, error: test.error || null, test: 'candy', suite_version: 1,
+  const kind = test.kind || 'candy';
+  return { request_id: test.id, status: test.status, error: test.error || null, test: kind, variant: test.variant || 'original', suite_version: 2, attribution: test.attribution || null,
     requested_runs: test.runs, finished_runs: results.length, correct, wrong, graded,
     failed: results.filter(x => x.status === 'failed').length, ungraded: results.filter(x => x.status === 'ungraded').length,
     pass_rate: graded ? Math.round(correct / graded * 100) : null, selected_model: test.route,
-    created_at: test.createdAt, results, expected_answer: 21,
-    note: '只反映本次糖果题表现。单题对错不能证明账号降智、模型身份或供应商换模；推理强度、系统上下文和随机波动都会影响结果。' };
+    created_at: test.createdAt, results, expected_answer: kind === 'candy' ? 21 : null,
+    note: kind === 'fingerprint' ? '指纹归因只比较参考库内候选，不能证明模型身份。Cindy 的系统上下文和指令层级与参考库采样不同，概率可能偏移。' : kind === 'pelican' ? 'SVG/HTML 构图需人工观察，没有客观通过率。预览禁用脚本、联网和外部资源；原版脚本动画不会执行，SVG/CSS 动画可显示。' : '只反映本次糖果题表现。单题对错不能证明账号降智、模型身份或供应商换模；推理强度、系统上下文和随机波动都会影响结果。' };
 }
 async function getTest(id) {
   const test = await readJson(testPath(id), null);
@@ -570,20 +576,24 @@ async function getTest(id) {
 async function saveTest(test) { test.updatedAt = new Date().toISOString(); await writeJson(testPath(test.id), test); }
 async function startCandyTest(raw, id) {
   checkedId(id);
-  const runs = raw.runs === undefined ? 3 : raw.runs;
+  const kind = raw.kind || 'candy', variant = raw.variant || 'original';
+  if (!['candy', 'pelican', 'fingerprint'].includes(kind)) throw problem('TEST_UNSUPPORTED', 'SIWC 需要 CPA 凭证绑定，Cindy 模型通道无法核验。');
+  if (!['original', 'all-in-one'].includes(variant)) throw problem('INVALID_REQUEST', '未知画鹈鹕版本。');
+  const runs = kind === 'fingerprint' ? 3 : kind === 'pelican' ? 1 : raw.runs === undefined ? 3 : raw.runs;
   if (!Number.isInteger(runs) || runs < 1 || runs > CANDY_MAX_RUNS) throw problem('INVALID_REQUEST', '测试次数必须是 1–5 的整数。');
   return locked('test-' + id, async () => {
     const existing = await readJson(testPath(id), null);
     if (existing) {
-      if (existing.runs !== runs) throw problem('REQUEST_CONFLICT', '同一测试编号不能改变次数，请查询原请求。');
+      if (existing.runs !== runs || (existing.kind || 'candy') !== kind || (existing.variant || 'original') !== variant) throw problem('REQUEST_CONFLICT', '同一测试编号不能改变类型、版本或次数，请查询原请求。');
       return viewTest(existing);
     }
     const current = (await settings()).saved;
     if (!current.route) throw problem('MODEL_REQUIRED', '请先选择并保存模型，再运行降智测试。');
     const selected = route(current.route);
+    if (raw.settings_revision !== undefined && raw.settings_revision !== current.revision) throw problem('SETTINGS_CHANGED', '模型设置已变化，请刷新后再测试。');
     await assertModelAvailable(selected);
-    // Parent and each round persist before any model call. Retries reuse request keys.
-    const test = { id, runs, route: selected, status: 'prepared', results: [], createdAt: new Date().toISOString() };
+    const plan = kind === 'candy' ? { prompts: Array.from({ length: runs }, () => ({ prompt: CANDY_PROMPT })) } : await evaluationWorker('prepare_test', { kind, variant });
+    const test = { id, kind, variant, runs, prompts: plan.prompts, route: selected, status: 'prepared', results: [], createdAt: new Date().toISOString() };
     await saveTest(test);
     await indexEntry('tests', { id, createdAt: test.createdAt });
     return viewTest(test);
@@ -594,12 +604,14 @@ async function queryCandyTest(id) {
   return locked('test-' + id, async () => {
     const test = await getTest(id);
     if (TERMINAL.includes(test.status)) return viewTest(test);
+    if (test.cancelRequested) return cancelTestLocked(test);
     const round = test.results.length + 1;
     // Hash keeps round identifiers within Host's requestKey length limit.
     const roundId = 'candy-' + (await hash(test.id)).slice(0, 40) + '-' + round;
     if (!await readJson(jobPath(roundId), null)) {
-      await saveJob({ schemaVersion: 3, kind: 'candy', id: roundId, route: test.route, status: 'prepared',
-        prompt: CANDY_PROMPT, createdAt: new Date().toISOString(), contextUsed: [], contextOmitted: 0, contextHash: '', project: null });
+      const challenge = test.prompts?.[round - 1] || { prompt: CANDY_PROMPT };
+      await saveJob({ schemaVersion: 3, kind: test.kind || 'candy', variant: test.variant, expectedCount: challenge.expected_count, id: roundId, route: test.route, status: 'prepared',
+        prompt: challenge.prompt, createdAt: new Date().toISOString(), contextUsed: [], contextOmitted: 0, contextHash: '', project: null });
     }
     test.activeRound = roundId;
     await saveTest(test);
@@ -615,22 +627,30 @@ async function queryCandyTest(id) {
       test.status = state.status;
       test.error = state.error;
     }
+    if (test.status === 'completed' && test.kind === 'fingerprint' && !test.attribution) {
+      const outputs = test.results.filter(item => item.status === 'collected').map(item => ({ text: item.raw_answer, expected_count: item.expected_count }));
+      try { test.attribution = await evaluationWorker('analyze_fingerprint', { outputs }); }
+      catch (error) { test.error = { code: error.code || 'EVALUATION_FAILED', message: error.message }; }
+    }
     await saveTest(test);
     return viewTest(test);
   });
+}
+async function cancelTestLocked(test) {
+  test.cancelRequested = true; await saveTest(test);
+  if (test.activeRound) {
+    const state = await cancelOptimization(test.activeRound);
+    if (!TERMINAL.includes(state.status)) { test.status = state.status; test.error = state.error; await saveTest(test); return viewTest(test); }
+    if (state.result && test.results.length < Number(test.activeRound.split('-').pop())) test.results.push({ round: test.results.length + 1, ...state.result });
+  }
+  test.status = 'cancelled'; delete test.error; await saveTest(test); return viewTest(test);
 }
 async function cancelCandyTest(id) {
   checkedId(id);
   return locked('test-' + id, async () => {
     const test = await getTest(id);
     if (TERMINAL.includes(test.status)) return viewTest(test);
-    if (test.activeRound) {
-      const state = await cancelOptimization(test.activeRound);
-      if (!TERMINAL.includes(state.status)) { test.status = state.status; test.error = state.error; await saveTest(test); return viewTest(test); }
-      if (state.result && test.results.length < Number(test.activeRound.split('-').pop())) test.results.push({ round: test.results.length + 1, ...state.result });
-    }
-    test.status = 'cancelled'; await saveTest(test);
-    return viewTest(test);
+    return cancelTestLocked(test);
   });
 }
 async function candyHistory() {
@@ -646,7 +666,7 @@ async function candyHistory() {
   return history;
 }
 function candyResultCard(value) {
-  const names = { correct: '通过', wrong: '未通过', failed: '请求失败', ungraded: '无法评分' };
+  const names = { correct: '通过', wrong: '未通过', failed: '请求失败', ungraded: '无法评分', generated: '已生成画面', collected: '已采集样本' };
   const rows = value.results.map(item => '<li>第 ' + item.round + ' 次：' + names[item.status] + '；' + escapeHtml(item.final_answer ?? item.error ?? item.reason ?? '') + '</li>').join('');
   return '<div style="padding:16px;color:var(--text-primary,#202720);font:14px/1.6 var(--font-sans,system-ui)"><h3 style="margin:0 0 10px;font-size:16px">降智测试 · 糖果题</h3><p>' + escapeHtml(value.selected_model.model + ' · ' + value.selected_model.providerId + ' · 推理 ' + (value.selected_model.effort || '默认')) + '</p><p>完成 ' + value.finished_runs + '/' + value.requested_runs + '；可评分 ' + value.graded + ' 次，通过 ' + value.correct + ' 次（' + (value.pass_rate === null ? '暂无通过率' : value.pass_rate + '%') + '）</p><ul>' + rows + '</ul><p>' + escapeHtml(value.note) + '</p></div>';
 }
@@ -722,11 +742,18 @@ async function handleTool(msg) {
       await cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: { selected_model: saved.route, note: '模型已保存；聊天和工作台均使用这个选择。' } });
     } else if (msg.tool === 'optimizer_status') {
       const saved = (await settings()).saved;
-      await cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: { version: '1.3.0', selected_model: saved.route, category: saved.category, length: saved.length, project: currentProjectFrom((await settings()).document)?.name || null } });
+      await cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: { version: '1.4.0', selected_model: saved.route, category: saved.category, length: saved.length, project: currentProjectFrom((await settings()).document)?.name || null, test_types: ['candy', 'fingerprint', 'pelican'], siwc: 'unsupported' } });
     } else if (msg.tool === 'optimize_prompt') {
       const id = msg.args.request_id || ('r-' + msg.callId);
       await startOptimization(msg.args, id, msg.args.session_context ? { ...msg.args.session_context, callId: msg.callId } : null);
       await deliver(msg, await waitForResult(id, msg));
+    } else if (msg.tool === 'run_model_test') {
+      const id = msg.args.request_id || ('t-' + msg.callId);
+      await startCandyTest(msg.args, id);
+      await cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: await queryCandyTest(id) });
+    } else if (msg.tool === 'query_model_test' || msg.tool === 'cancel_model_test') {
+      const state = msg.tool === 'cancel_model_test' ? await cancelCandyTest(checkedId(msg.args.request_id)) : await queryCandyTest(checkedId(msg.args.request_id));
+      await cindy.send({ type: 'tool-result', callId: msg.callId, ok: true, result: state });
     } else if (msg.tool === 'candy_test') {
       const id = msg.args.request_id || ('t-' + msg.callId);
       await startCandyTest(msg.args, id);
@@ -759,6 +786,8 @@ async function chooseProject() {
 }
 async function handleUi(action, payload, requestId) {
   switch (action) {
+    case 'test-load': return viewTest(await getTest(checkedId(payload.request_id)));
+    case 'test-prompt': return payload.kind === 'candy' ? { prompts: [{ prompt: CANDY_PROMPT }] } : evaluationWorker('prepare_test', { kind: payload.kind, variant: payload.variant });
     case 'bootstrap': { const current = await settings(); project = currentProjectFrom(current.document); return { settings: current.saved, models: await models(), records: [], imports: [], project: project ? { name: project.name } : null }; }
     case 'save-settings': return { settings: await saveSettings(payload) };
     case 'pick-model': return { settings: await chooseModel() };

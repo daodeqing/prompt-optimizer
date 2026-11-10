@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>提示词优化器设置</title><link rel="stylesheet" href="settings.css"></head>
+<body><main>
+<h2>模型与推理强度</h2><p class="hint">优化提示词与模型测试共用这份配置，选择后点击保存。</p>
+<label for="settingsModel">模型与来源</label><select id="settingsModel"><option value="">正在加载模型…</option></select>
+<div class="fields"><div><label for="settingsEffort">推理强度</label><select id="settingsEffort"><option value="">未指定</option></select></div><div><label for="settingsFast">Fast</label><select id="settingsFast"><option value="false">关闭</option></select></div></div>
+<div class="actions"><button id="saveSettings" type="button" disabled>保存配置</button><button id="nativePicker" type="button">用 Cindy 选择</button><button id="reloadSettings" type="button">刷新模型</button></div>
+<p id="settingsStatus" role="status" aria-live="polite">正在读取设置…</p><p class="hint">只显示当前 Cindy 可用的真实模型与强度。不提供强度的模型保持“未指定”。改变选择不会触发模型调用。</p>
+</main><script src="settings.js" defer></script></body></html>

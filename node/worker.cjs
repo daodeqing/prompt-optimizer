@@ -2,6 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
 const { extractPdf } = require('./pdf.cjs');
+const evaluation = require('./evaluation.cjs');
 // PDF.js warnings must never enter the JSON-RPC stdout stream.
 console.log = (...args) => console.error(...args);
 const TEXT_EXTENSIONS = new Set(['.md', '.markdown', '.txt', '.json', '.yaml', '.yml', '.toml', '.ini', '.js', '.cjs', '.mjs', '.ts', '.tsx', '.jsx', '.py', '.java', '.go', '.rs', '.swift', '.html', '.css', '.scss', '.vue', '.svelte', '.sql', '.sh', '.bat', '.ps1']);
@@ -82,6 +83,6 @@ async function scanProject(params) {
 }
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-rl.on('line', async (line) => { let request; try { request = JSON.parse(line); } catch { reply(null, null, Object.assign(new Error('Parse error'), { code: -32700 })); return; } try { if (request.method === 'scan_project') reply(request.id, await scanProject(request.params || {})); else if (request.method === 'read_context') reply(request.id, await readContext(request.params || {})); else throw Object.assign(new Error('Method not found'), { code: -32601 }); } catch (error) { reply(request.id, null, error); } });
+rl.on('line', async (line) => { let request; try { request = JSON.parse(line); } catch { reply(null, null, Object.assign(new Error('Parse error'), { code: -32700 })); return; } try { if (request.method === 'scan_project') reply(request.id, await scanProject(request.params || {})); else if (request.method === 'read_context') reply(request.id, await readContext(request.params || {})); else if (request.method === 'prepare_test') reply(request.id, evaluation.prepare(request.params || {})); else if (request.method === 'score_test') reply(request.id, evaluation.score(request.params || {})); else if (request.method === 'analyze_fingerprint') reply(request.id, evaluation.analyze(request.params?.outputs)); else throw Object.assign(new Error('Method not found'), { code: -32601 }); } catch (error) { reply(request.id, null, error); } });
 
 module.exports={readContext,scanProject,safeRelative};

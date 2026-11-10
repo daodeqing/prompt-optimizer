@@ -3,19 +3,46 @@
   "minCindyVersion": "0.1.125",
   "id": "prompt-optimizer",
   "name": "提示词优化器",
-  "description": "根据用户选定的目标、项目资料和历史方案，生成清晰、可执行且节省上下文的提示词，并测试模型是否出现明显降智表现。",
-  "whenToUse": "需要优化、重写、扩充、压缩或整理 AI 提示词，或想用糖果题快速检查当前模型是否出现明显降智表现时找我",
-  "version": "1.3.0",
-  "releaseNotes": "相较已上架 1.2.0：修复成品卡与外层助手重复输出提示词，卡片交付时工具回执不再携带正文与触发二次改写的资料状态；卡片不可用时支持原请求纯文本交付。新增糖果题降智测试，工作台可选 1、3、5 次，聊天支持 1–5 次，严格沿用已保存来源、模型和推理强度；每次独立闭卷任务，用最终答案结构化评分，分别展示答对、答错、无法评分、请求失败、耗时、回执和最近 20 次测试历史。稳定请求编号支持查询、恢复与取消，不重发状态未知的请求。说明测试费用与单题结论边界，保留优化、PDF、本地资料和历史查询原功能及既有权限。",
+  "description": "结合项目资料、文字型 PDF 与历史会话优化提示词；插件内直接选择模型和推理强度，支持糖果题、数字指纹及画鹈鹕测试，保存结果并对比模型表现。",
+  "whenToUse": "需要优化、重写、扩充或压缩 AI 提示词，配置优化模型与推理强度，或运行糖果题、指纹归因、画鹈鹕测试时使用",
+  "version": "1.4.0",
+  "releaseNotes": "相较 1.2.0：新增插件详情页模型、来源、推理强度与 Fast 配置，工作台和聊天共用保存设置；工作台加入糖果题、数字指纹、画鹈鹕原版/多合一测试和 SIWC 能力说明。糖果题支持 1–5 次独立闭卷评分，数字指纹接入参考库与校准算法，画面支持禁用脚本和外部资源的隔离预览。记录保留实际模型配置、回答、耗时与回执，支持查询、恢复、取消和最近 20 次索引；修复未知状态重发、取消后续轮次和结果文本插入风险。保留项目文本、PDF 本地提取及会话回执核验，修复结果卡重复交付，更新清晰图标与完整使用说明。指纹仅供候选归因，单题表现不证明账号降智；当前模型通道不支持 CPA SIWC 凭证核验。",
   "entry": "main.js",
   "command": "提示词优化",
   "icon": "assets/icon.png",
+  "settingsHtml": "settings.html",
+  "settingsHeight": 520,
   "mainView": {
     "title": "提示词优化器",
     "icon": "message-circle",
     "html": "main-view.html"
   },
   "tools": [
+    {
+      "name": "run_model_test",
+      "description": "使用插件中由用户保存的模型与推理强度运行糖果题、数字指纹或画鹈鹕测试。每次调用可能收费，状态未知时只用 query_model_test 查询原编号。指纹仅是参考库候选归因，画面需人工评价；均不能证明模型身份或账号降智。SIWC 通道不受支持。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "enum": ["candy", "fingerprint", "pelican"] },
+          "variant": { "type": "string", "enum": ["original", "all-in-one"] },
+          "runs": { "type": "integer", "minimum": 1, "maximum": 5 },
+          "request_id": { "type": "string", "maxLength": 100, "pattern": "^[a-zA-Z0-9_-]+$" }
+        },
+        "required": ["kind"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "query_model_test",
+      "description": "查看并推进同一次模型测试，只查询原 request_id；不重复发送已经提交的轮次。",
+      "parameters": { "type": "object", "properties": { "request_id": { "type": "string", "maxLength": 100, "pattern": "^[a-zA-Z0-9_-]+$" } }, "required": ["request_id"], "additionalProperties": false }
+    },
+    {
+      "name": "cancel_model_test",
+      "description": "取消原模型测试，保留已完成轮次并停止后续请求；已经产生的费用不保证退回。",
+      "parameters": { "type": "object", "properties": { "request_id": { "type": "string", "maxLength": 100, "pattern": "^[a-zA-Z0-9_-]+$" } }, "required": ["request_id"], "additionalProperties": false }
+    },
     {
       "name": "optimize_prompt",
       "description": "在提示词优化器已选项目内改写用户提示词。自动只读筛选相关项目文本与文字型 PDF（随包本地提取、保留页码；扫描件提示需 OCR），所选模型尝试通过 Cindy 官方历史工具按项目目录查询相关会话，不可用时明确返回未读取状态，再交付可复制的提示词；不执行原任务、不修改项目文件。不读取其他项目或宿主数据库。工作台已保存模型必用，不可用就停止。分类和篇幅可自动或手选；清晰的原文只做必要修改。状态未知时查询原请求，不重复提交。 成品卡已提交时本轮到此结束，不重复正文、不再解释或执行原任务，不检查目录或生成文件。仅用户看不到卡片时用原请求 delivery=text 原样交付一次。",

@@ -1,4 +1,8 @@
-# 提示词优化器 1.3.0
+# 提示词优化器 1.4.0
+
+插件详情页“模型与推理强度”和工作台直接选择真实模型来源、型号、推理强度与 Fast，保存后统一生效。不替用户指定模型或捏造档位。run_model_test 的 kind 为 candy、fingerprint、pelican；画鹈鹕 variant 为 original 或 all-in-one。fingerprint 固定 3 组挑战，pelican 每次 1 轮，candy 为 1–5 轮。返回 request_id 后只用 query_model_test 查看原编号，cancel_model_test 取消；旧 candy_test/query_candy_test 继续兼容。画鹈鹕生成的是文本模型的 SVG/HTML，不走图片生成模型。
+
+测试页展示原始回答、实际接受的模型配置和耗时；历史按钮只加载记录，继续查看才推进未完成请求。模型工具调用使闭卷样本无法评分，失败不算答错，不自动重试。指纹归因仅比较固定参考库，Cindy 系统上下文和用户层题面与原采样不同，不把归因概率说成真实模型身份。SIWC 未开放 CPA 凭证绑定核验，必须返回不支持，不能用普通 OK 请求代替。画面 iframe 使用空 sandbox 并禁用脚本、外部网络和表单；用户需要完整脚本动画时复制代码自行审阅。
 
 主流程为选择项目、输入原话、优化、复制。choose_project 打开本机目录选择器并保存选择；聊天未保存项目时使用宿主注入的当前本机目录，不把远程路径当本机目录。模型必须是工作台保存的完整配置，未设置时用 choose_model 让用户亲选，不自行改型或回退。
 
